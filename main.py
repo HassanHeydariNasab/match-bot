@@ -19,19 +19,23 @@ ITEMS = ["🍓", "🍓", "🍓", "🍌", "🍌", "🍌", "🍉", "🍉", "🍉"]
 BOARD_SIZE_X = 3
 BOARD_SIZE_Y = 3
 
+# v: value
+# r: revealed
+# pv: permanently revealed
+
 
 def get_initial_board_state():
     """Initializes and returns a new board state."""
-    shuffled_items = random.sample(ITEMS, len(ITEMS))
+    random.shuffle(ITEMS)
     board_cells = {}
     idx = 0
     for y in range(1, BOARD_SIZE_Y + 1):
         for x in range(1, BOARD_SIZE_X + 1):
             cell_id = f"{x}_{y}"
             board_cells[cell_id] = {
-                "v": shuffled_items[idx],
-                "r": False,
-                "perm_revealed": False,
+                "value": ITEMS[idx],
+                "revealed": False,
+                "permanently_revealed": False,
             }
             idx += 1
     return board_cells
@@ -45,10 +49,10 @@ def generate_keyboard(board_cells: dict) -> InlineKeyboardMarkup:
         for x in range(1, BOARD_SIZE_X + 1):
             cell_id = f"{x}_{y}"
             cell = board_cells[cell_id]
-            if cell["r"] or cell["perm_revealed"]:
-                text = cell["v"]
+            if cell["revealed"] or cell["permanently_revealed"]:
+                text = cell["value"]
             else:
-                text = "❓"  # Placeholder for hidden items
+                text = "❓"
             row.append(InlineKeyboardButton(text, callback_data=cell_id))
         keyboard.append(row)
     return InlineKeyboardMarkup(keyboard)
@@ -84,9 +88,9 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data is None:
         context.user_data = {}
 
-    board_cells = context.user_data.get("board_cells")
-    current_selection = context.user_data.get("current_selection")
-    matched_values = context.user_data.get("matched_values")
+    board_cells: dict | None = context.user_data.get("board_cells")
+    current_selection: list[dict] | None = context.user_data.get("current_selection")
+    matched_values: list[str] | None = context.user_data.get("matched_values")
 
     user_name = "رفیق"
     if update.effective_user and update.effective_user.first_name:
@@ -121,13 +125,13 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     tapped_cell_info = board_cells[cell_id]
 
-    if tapped_cell_info["perm_revealed"] or any(
+    if tapped_cell_info["permanently_revealed"] or any(
         sel_item["id"] == cell_id for sel_item in current_selection
     ):
         return
 
-    tapped_cell_info["r"] = True
-    current_selection.append({"id": cell_id, "value": tapped_cell_info["v"]})
+    tapped_cell_info["revealed"] = True
+    current_selection.append({"id": cell_id, "value": tapped_cell_info["value"]})
 
     message_text = default_message_text
 
@@ -144,8 +148,8 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 matched_values.append(matched_value)
 
             for item in current_selection:
-                board_cells[item["id"]]["perm_revealed"] = True
-                board_cells[item["id"]]["r"] = True
+                board_cells[item["id"]]["permanently_revealed"] = True
+                board_cells[item["id"]]["revealed"] = True
 
             current_selection.clear()
 
@@ -158,7 +162,7 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         else:
             for item in current_selection:
-                board_cells[item["id"]]["r"] = False
+                board_cells[item["id"]]["revealed"] = False
             current_selection.clear()
             message_text = "❌ مثل هم نبودن! دوباره تلاش کن."
 
