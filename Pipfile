@@ -4,7 +4,8 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-python-telegram-bot = "*"
+httpcore = {extras = ["asyncio"], version = "*"}
+python-telegram-bot = {extras = ["webhooks"], version = "*"}
 
 [dev-packages]
 
