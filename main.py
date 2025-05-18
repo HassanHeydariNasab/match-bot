@@ -457,9 +457,7 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
             num_unique_item_types = len(set(game_items))
             if len(matched_values) == num_unique_item_types:
                 time_taken = time.time() - game_start_time
-                message_text = (
-                    f"🎉 برنده شدی! همه رو پیدا کردی! 🎉\nزمان: {time_taken:.2f} ثانیه"
-                )
+                message_text = f"🎉 برنده شدی! همه رو پیدا کردی! 🎉\nزمان: {time_taken:.2f} ثانیه\nجدول امتیازات: /scores"
 
                 # Store high score
                 user_name = "بازیکن"
