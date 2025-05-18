@@ -661,13 +661,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--key",
         type=str,
-        default="private.key",
+        required=False,
         help="Path to the private key file for webhook SSL. Default is private.key.",
     )
     parser.add_argument(
         "--cert",
         type=str,
-        default="cert.pem",
+        required=False,
         help="Path to the certificate file for webhook SSL. Default is cert.pem.",
     )
     parser.add_argument(
@@ -725,8 +725,8 @@ if __name__ == "__main__":
             listen=args.listen,
             port=args.port,
             secret_token=args.webhook_secret,
-            key=args.key,
-            cert=args.cert,
+            key=args.key if args.key else None,
+            cert=args.cert if args.cert else None,
             webhook_url=args.webhook_url,
         )
     else:
