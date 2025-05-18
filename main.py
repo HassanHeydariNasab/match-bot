@@ -698,7 +698,7 @@ if __name__ == "__main__":
                 MessageHandler(filters.TEXT & ~filters.COMMAND, choose_match_count)
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("start", start), CommandHandler("cancel", cancel)],
     )
 
     application.add_handler(conv_handler)
