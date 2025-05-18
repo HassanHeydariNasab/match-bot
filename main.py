@@ -1,6 +1,8 @@
 import logging
 import random
-import re  # For parsing dimensions
+import re
+import time
+import argparse
 from typing import TypedDict, Dict, List, cast
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -12,6 +14,7 @@ from telegram.ext import (
     filters,
     CallbackQueryHandler,
     ConversationHandler,
+    PicklePersistence,
 )
 
 logging.basicConfig(
@@ -20,6 +23,9 @@ logging.basicConfig(
 
 # State definitions for ConversationHandler
 CHOOSE_DIMENSIONS, CHOOSE_MATCH_COUNT = range(2)
+MAX_HIGH_SCORES_PER_CONFIG = (
+    10  # Max number of high scores to store per game configuration
+)
 
 # Emoji pool for dynamic item generation
 EMOJI_POOL = [
@@ -193,10 +199,13 @@ def generate_keyboard(
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Starts the game configuration conversation."""
+    if context.user_data is not None:  # Clear previous game data if any
+        context.user_data.clear()
+
     if update.effective_chat:
         await update.effective_chat.send_message(
             "به بازی پیدا کردن آیتم‌های مشابه خوش آمدید!\n"
-            "لطفاً ابعاد تخته بازی را وارد کنید (مثلاً 3x3 یا 4x2)."
+            "لطفاً ابعاد تخته بازی را وارد کنید (مثلاً 3x3 یا 4x2). حداکثر 8x9."
         )
     return CHOOSE_DIMENSIONS
 
@@ -220,32 +229,31 @@ async def choose_dimensions(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     x_dim, y_dim = int(match.group(1)), int(match.group(2))
 
-    if x_dim > 8 or y_dim > 9:
+    if x_dim > 8 or y_dim > 9 or x_dim <= 0 or y_dim <= 0:
         if update.effective_chat:
             await update.effective_chat.send_message(
-                "ابعاد نامعتبر است. حداکثر 8x9 مجاز است."
+                "ابعاد نامعتبر است. ابعاد باید مثبت و حداکثر 8x9 باشد."
             )
         return CHOOSE_DIMENSIONS
 
-    if not (
-        1 < x_dim * y_dim <= len(EMOJI_POOL) * 10 and x_dim > 0 and y_dim > 0
-    ):  # Max 10 items per emoji type, min 2 cells
+    if x_dim * y_dim < 2:  # Minimum 2 cells for a game
         if update.effective_chat:
             await update.effective_chat.send_message(
-                "ابعاد نامعتبر است. حداقل باید ۲ خانه داشته باشد و ابعاد معقول باشد."
+                "ابعاد تخته خیلی کوچک است. حداقل باید ۲ خانه داشته باشد."
             )
         return CHOOSE_DIMENSIONS
 
-    if x_dim * y_dim > 100:  # Arbitrary limit for very large boards
+    if (
+        x_dim * y_dim > len(EMOJI_POOL) * 10
+    ):  # Check against emoji pool capacity for a reasonable game
         if update.effective_chat:
             await update.effective_chat.send_message(
-                "ابعاد تخته خیلی بزرگ است. لطفاً یک ابعاد کوچکتر انتخاب کنید."
+                "ابعاد تخته نسبت به تعداد شکلک‌های موجود خیلی بزرگ است. لطفاً ابعاد کوچکتری انتخاب کنید."
             )
         return CHOOSE_DIMENSIONS
 
-    if context.user_data is None:
-        logging.error("user_data is None in choose_dimensions")
-        return CHOOSE_DIMENSIONS
+    if context.user_data is None:  # Should be initialized by PTB
+        context.user_data = {}
 
     context.user_data["board_size_x"] = x_dim
     context.user_data["board_size_y"] = y_dim
@@ -268,7 +276,7 @@ async def choose_match_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return CHOOSE_MATCH_COUNT
 
     user_input = update.message.text
-    if context.user_data is None:  # Should be initialized
+    if context.user_data is None:
         logging.error("user_data is None in choose_match_count beginning")
         if update.effective_chat:
             await update.effective_chat.send_message(
@@ -298,9 +306,6 @@ async def choose_match_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
         return CHOOSE_MATCH_COUNT
 
-    # board_size_x and board_size_y were assigned from context.user_data.get()
-    # and confirmed to be integers by the isinstance check above.
-    # We directly use these validated local variables.
     total_cells = board_size_x * board_size_y
 
     if not (1 < match_count <= total_cells):
@@ -318,9 +323,7 @@ async def choose_match_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return CHOOSE_MATCH_COUNT
 
     num_unique_item_sets = total_cells // match_count
-    if (
-        num_unique_item_sets <= 1 and total_cells > 1
-    ):  # Need at least 2 unique sets for a game unless it's a 1-cell board (which is invalid anyway)
+    if num_unique_item_sets <= 1 and total_cells > 1:
         if update.effective_chat:
             await update.effective_chat.send_message(
                 "با این تنظیمات، کمتر از دو گروه منحصر به فرد از آیتم‌ها خواهیم داشت. لطفاً تعداد تطابق را تغییر دهید یا ابعاد را بزرگتر کنید."
@@ -338,10 +341,8 @@ async def choose_match_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["match_count"] = match_count
 
-    # Initialize board state
     initial_board_cells = get_initial_board_state(context)
     if initial_board_cells is None:
-        # This indicates an issue with item generation based on validated parameters, which should be rare.
         if update.effective_chat:
             await update.effective_chat.send_message(
                 "مشکلی در ساخت تخته بازی پیش آمد. لطفاً با /start مجدداً تلاش کنید."
@@ -350,9 +351,8 @@ async def choose_match_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["board_cells"] = initial_board_cells
     context.user_data["current_selection"] = []
-    context.user_data[
-        "matched_values"
-    ] = []  # Stores values of successfully matched sets
+    context.user_data["matched_values"] = []
+    context.user_data["game_start_time"] = time.time()  # Record game start time
 
     reply_markup = generate_keyboard(context)
 
@@ -361,9 +361,7 @@ async def choose_match_count(update: Update, context: ContextTypes.DEFAULT_TYPE)
             text=f"بازی شروع شد! {match_count} تا مثل هم پیدا کن!",
             reply_markup=reply_markup,
         )
-    elif (
-        update.effective_chat
-    ):  # Fallback if keyboard generation failed (should be rare)
+    elif update.effective_chat:
         await update.effective_chat.send_message(
             "مشکلی در نمایش تخته بازی پیش آمد. لطفاً با /start مجدداً تلاش کنید."
         )
@@ -380,7 +378,7 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if context.user_data is None:
-        context.user_data = {}  # Should be initialized
+        context.user_data = {}
 
     board_cells: BoardCells | None = context.user_data.get("board_cells")
     current_selection: list[SelectedItem] | None = context.user_data.get(
@@ -389,6 +387,9 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     matched_values: list[str] | None = context.user_data.get("matched_values")
     match_count: int | None = context.user_data.get("match_count")
     game_items: list[str] | None = context.user_data.get("game_items")
+    game_start_time: float | None = context.user_data.get("game_start_time")
+    board_size_x: int | None = context.user_data.get("board_size_x")  # For score key
+    board_size_y: int | None = context.user_data.get("board_size_y")  # For score key
 
     if (
         board_cells is None
@@ -396,24 +397,26 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
         or matched_values is None
         or match_count is None
         or game_items is None
+        or game_start_time is None
+        or board_size_x is None
+        or board_size_y is None
     ):
-        logging.warning("Game state not found in user_data in button_tap.")
+        logging.warning(
+            "Game state not found or incomplete in user_data in button_tap."
+        )
         error_message = (
             "بازی منقضی شده یا مشکلی پیش آمده. لطفاً با /start یک بازی جدید شروع کنید."
         )
-        # Attempt to edit message or send a new one
         if isinstance(query.message, Message):
             try:
                 await query.edit_message_text(text=error_message)
             except Exception as e_edit:
                 logging.error(f"Error editing message for missing game state: {e_edit}")
-                if update.effective_chat:  # Fallback to sending a new message
+                if update.effective_chat:
                     await context.bot.send_message(
                         chat_id=update.effective_chat.id, text=error_message
                     )
-        elif (
-            update.effective_chat
-        ):  # If query.message is not a Message, try sending new
+        elif update.effective_chat:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id, text=error_message
             )
@@ -438,14 +441,11 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = default_message_text
 
     if len(current_selection) == match_count:
-        # Check if all selected items have the same value
         is_match = len(set(item["value"] for item in current_selection)) == 1
 
         if is_match:
             matched_value = current_selection[0]["value"]
-            if (
-                matched_value not in matched_values
-            ):  # Only add unique values to track unique sets
+            if matched_value not in matched_values:
                 matched_values.append(matched_value)
 
             for item in current_selection:
@@ -454,10 +454,35 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             current_selection.clear()
 
-            # Win condition: all unique item types have been matched
             num_unique_item_types = len(set(game_items))
             if len(matched_values) == num_unique_item_types:
-                message_text = "🎉 برنده شدی! همه رو پیدا کردی! 🎉"
+                time_taken = time.time() - game_start_time
+                message_text = (
+                    f"🎉 برنده شدی! همه رو پیدا کردی! 🎉\nزمان: {time_taken:.2f} ثانیه"
+                )
+
+                # Store high score
+                user_name = "بازیکن"
+                if update.effective_user and update.effective_user.first_name:
+                    user_name = update.effective_user.first_name
+
+                score_config_key = f"{board_size_x}x{board_size_y}_match{match_count}"
+
+                if context.bot_data is None:  # Ensure bot_data is initialized
+                    context.bot_data = {}
+
+                high_scores_for_config: list = context.bot_data.get(
+                    score_config_key, []
+                )
+
+                high_scores_for_config.append({"name": user_name, "time": time_taken})
+                high_scores_for_config.sort(
+                    key=lambda x: x["time"]
+                )  # Sort by time, ascending
+                context.bot_data[score_config_key] = high_scores_for_config[
+                    :MAX_HIGH_SCORES_PER_CONFIG
+                ]
+
             else:
                 message_text = f"✅ عالی بود! {match_count} تا {matched_value} پیدا کردی. ادامه بده!"
         else:
@@ -468,12 +493,8 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ مثل هم نبودن! ({match_count} تا باید مثل هم باشن). دوباره تلاش کن."
             )
 
-    context.user_data["board_cells"] = board_cells
-    context.user_data["current_selection"] = current_selection
-    context.user_data["matched_values"] = matched_values
-
     reply_markup = generate_keyboard(context)
-    if reply_markup is None:  # Should not happen if state is consistent
+    if reply_markup is None:
         logging.error(
             "Failed to generate keyboard in button_tap, possibly due to missing user_data."
         )
@@ -501,9 +522,7 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         except Exception as e:
             logging.error(f"Error editing message: {e}")
-            if (
-                query.message.text != message_text and update.effective_chat
-            ):  # Fallback on text change
+            if query.message.text != message_text and update.effective_chat:
                 logging.info(
                     f"Falling back to sending new message for chat {update.effective_chat.id}"
                 )
@@ -529,6 +548,57 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"Error sending new message (fallback): {e_send_alt}")
 
 
+async def show_scores(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Displays the high scores."""
+    if not update.effective_chat:
+        return
+
+    if context.bot_data is None or not context.bot_data:
+        await update.effective_chat.send_message("هنوز هیچ امتیازی ثبت نشده است.")
+        return
+
+    response_message = "🏆 **جدول امتیازات برتر** 🏆\n\n"
+    found_scores = False
+
+    sorted_configs = sorted(
+        context.bot_data.keys()
+    )  # Sort for consistent display order
+
+    for config_key in sorted_configs:
+        if not isinstance(context.bot_data[config_key], list):  # Skip non-score data
+            continue
+
+        scores = context.bot_data.get(config_key, [])
+        if scores:
+            found_scores = True
+            # Format the config key for display (e.g., "3x3_match3" -> "3x3 - تطابق 3")
+            try:
+                dims, match_val_str = config_key.split("_match")
+                match_val = int(match_val_str)
+                config_display_name = f"{dims} (تطابق {match_val})"
+            except ValueError:
+                config_display_name = config_key.replace("_match", " - تطابق ")
+
+            response_message += f"🕹️ **{config_display_name}**:\n"
+            for i, score_entry in enumerate(scores):
+                if (
+                    isinstance(score_entry, dict)
+                    and "name" in score_entry
+                    and "time" in score_entry
+                ):
+                    response_message += f"  {i + 1}. {score_entry['name']}: {score_entry['time']:.2f} ثانیه\n"
+                else:
+                    logging.warning(
+                        f"Malformed score entry for {config_key}: {score_entry}"
+                    )
+            response_message += "\n"
+
+    if not found_scores:
+        response_message = "هنوز هیچ امتیازی برای بازی‌های انجام شده ثبت نشده است."
+
+    await update.effective_chat.send_message(response_message, parse_mode="Markdown")
+
+
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Cancels and ends the conversation."""
     if update.effective_user:
@@ -542,25 +612,79 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This handler is now less relevant if most interactions are within conversations or button taps
-    # It can be used for messages outside of active conversations.
     if update.effective_chat and update.message and update.message.text:
-        # If not in a conversation, and not a command, guide the user.
         if not context.user_data or not any(
-            k in context.user_data for k in ["board_size_x", "match_count"]
+            k in context.user_data
+            for k in ["board_size_x", "match_count", "board_cells"]
         ):
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="برای شروع بازی جدید، لطفاً دستور /start را ارسال کنید.",
             )
-        # else: if in a game (e.g. board_cells exists), could ignore or remind about game.
-        # For now, let's keep it simple and only suggest /start if no game config is found.
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run the Telegram bot.")
+    parser.add_argument(
+        "--token",
+        type=str,
+        required=True,
+        help="The Telegram Bot API token.",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["polling", "webhook"],
+        default="polling",
+        help="Mode to run the bot in (polling or webhook). Default is polling.",
+    )
+
+    # Webhook specific arguments
+    parser.add_argument(
+        "--listen",
+        type=str,
+        default="0.0.0.0",
+        help="Listen address for webhook mode. Default is 0.0.0.0.",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8443,
+        help="Port for webhook mode. Default is 8443.",
+    )
+    parser.add_argument(
+        "--webhook-secret",
+        type=str,
+        default="YOUR_SECRET_TOKEN",  # User should replace this
+        help="Secret token for webhook verification. Replace YOUR_SECRET_TOKEN.",
+    )
+    parser.add_argument(
+        "--key",
+        type=str,
+        default="private.key",
+        help="Path to the private key file for webhook SSL. Default is private.key.",
+    )
+    parser.add_argument(
+        "--cert",
+        type=str,
+        default="cert.pem",
+        help="Path to the certificate file for webhook SSL. Default is cert.pem.",
+    )
+    parser.add_argument(
+        "--webhook-url",
+        type=str,
+        default="YOUR_WEBHOOK_URL",  # User should replace this
+        help="The URL your webhook will be served from. Replace YOUR_WEBHOOK_URL.",
+    )
+
+    args = parser.parse_args()
+
+    persistence = PicklePersistence(filepath="bot_data.pickle")
+
     application = (
         ApplicationBuilder()
-        .token("233480586:AAGxsvGafJMK0FKuvhfwuA-bgB2Pu7gHbLA")
+        .token(args.token)  # Use token from args
+        .persistence(persistence)
         .build()
     )
 
@@ -575,14 +699,36 @@ if __name__ == "__main__":
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        # Optionally: allow_reentry=True
     )
 
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(button_tap))
-    # The generic message handler is now less critical but can catch stray messages.
-    # Ensure it doesn't interfere with the ConversationHandler states.
-    # It's generally better to handle unexpected messages within conversation states if needed.
+    application.add_handler(
+        CommandHandler("scores", show_scores)
+    )  # Add /scores command handler
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
 
-    application.run_polling()
+    if args.mode == "webhook":
+        if (
+            args.webhook_url == "YOUR_WEBHOOK_URL"
+            or args.webhook_secret == "YOUR_SECRET_TOKEN"
+        ):
+            logging.error(
+                "For webhook mode, --webhook-url and --webhook-secret must be set. "
+                "Please provide them as command line arguments."
+            )
+            exit(1)
+        logging.info(
+            f"Starting bot in webhook mode. URL: {args.webhook_url}, Port: {args.port}, Listen: {args.listen}"
+        )
+        application.run_webhook(
+            listen=args.listen,
+            port=args.port,
+            secret_token=args.webhook_secret,
+            key=args.key,
+            cert=args.cert,
+            webhook_url=args.webhook_url,
+        )
+    else:
+        logging.info("Starting bot in polling mode...")
+        application.run_polling()
