@@ -1,5 +1,6 @@
 import logging
 import random
+from typing import TypedDict, Dict
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import (
@@ -19,15 +20,21 @@ ITEMS = ["🍓", "🍓", "🍓", "🍌", "🍌", "🍌", "🍉", "🍉", "🍉"]
 BOARD_SIZE_X = 3
 BOARD_SIZE_Y = 3
 
-# v: value
-# r: revealed
-# pv: permanently revealed
+
+CellInfo = TypedDict(
+    "CellInfo", {"value": str, "revealed": bool, "permanently_revealed": bool}
+)
+
+SelectedItem = TypedDict("SelectedItem", {"id": str, "value": str})
 
 
-def get_initial_board_state():
+BoardCells = Dict[str, CellInfo]
+
+
+def get_initial_board_state() -> BoardCells:
     """Initializes and returns a new board state."""
     random.shuffle(ITEMS)
-    board_cells = {}
+    board_cells: BoardCells = {}
     idx = 0
     for y in range(1, BOARD_SIZE_Y + 1):
         for x in range(1, BOARD_SIZE_X + 1):
@@ -41,7 +48,7 @@ def get_initial_board_state():
     return board_cells
 
 
-def generate_keyboard(board_cells: dict) -> InlineKeyboardMarkup:
+def generate_keyboard(board_cells: BoardCells) -> InlineKeyboardMarkup:
     """Generates the InlineKeyboardMarkup based on the current board_cells state."""
     keyboard = []
     for y in range(1, BOARD_SIZE_Y + 1):
@@ -62,7 +69,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat is not None and update.effective_user is not None:
         if context.user_data is None:
             context.user_data = {}
-        context.user_data["board_cells"] = get_initial_board_state()
+        initial_board = get_initial_board_state()
+        context.user_data["board_cells"] = initial_board
         context.user_data["current_selection"] = []
         context.user_data["matched_values"] = []
 
@@ -88,8 +96,10 @@ async def button_tap(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data is None:
         context.user_data = {}
 
-    board_cells: dict | None = context.user_data.get("board_cells")
-    current_selection: list[dict] | None = context.user_data.get("current_selection")
+    board_cells: BoardCells | None = context.user_data.get("board_cells")
+    current_selection: list[SelectedItem] | None = context.user_data.get(
+        "current_selection"
+    )
     matched_values: list[str] | None = context.user_data.get("matched_values")
 
     user_name = "رفیق"
